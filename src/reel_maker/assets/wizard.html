@@ -9,7 +9,7 @@
 <body class="desk">
 <header class="topbar">
   <div class="brand"><img src="/icon.svg" alt="" width="28" height="28"> Reel maker</div>
-  <div class="project" id="project-name">Deck List reel</div>
+  <div class="project" id="project-name"></div>
   <a class="subtle-link" id="example-link" href="/?example=1">See an example run</a>
 </header>
 <div class="example-banner" id="example-banner" hidden>
@@ -37,12 +37,8 @@
     <section class="step" data-step="app">
       <h1>Which app is the reel about?</h1>
       <p class="lede">Pick something you built in Studio. Apps that show something moving on screen make the best reels.</p>
-      <div class="app-grid" id="app-grid">
-        <button class="app-tile selected" data-app="deck-list"><span class="tile-icon" style="background:#492222;color:#F5D6A0">DL</span><b>Deck List</b><span>Magic deck builder with drag-to-tag</span><em class="badge">Studio's pick</em></button>
-        <button class="app-tile" data-app="dinner-signups"><span class="tile-icon" style="background:#D26645;color:#FCEFD4">DS</span><b>Dinner signups</b><span>Slack reminders with the route drawn</span></button>
-        <button class="app-tile" data-app="audio-file-download"><span class="tile-icon" style="background:#0B292B;color:#CECD0C">AF</span><b>Audio file download</b><span>Paste a link, the file lands in Dropbox</span></button>
-        <button class="app-tile" data-app="install-link-maker"><span class="tile-icon" style="background:#4B4C08;color:#E9ECD9">IL</span><b>Install link maker</b><span>A QR code that puts a site on your phone</span></button>
-      </div>
+      <div class="app-grid" id="app-grid"></div>
+      <div class="past-reels" id="past-reels" hidden><div class="share-label">Your reels</div><div id="past-reel-list"></div></div>
       <p class="note">Studio will look up the chat you built it in, so it can quote your own first message back to you.</p>
     </section>
 
@@ -60,11 +56,8 @@
     <section class="step" data-step="tone" hidden>
       <h1>Pick a tone</h1>
       <p class="lede">How your opening line would sound in each. You'll be the one saying it, so pick what sounds like you.</p>
-      <div class="tones">
-        <label class="tone"><input type="radio" name="tone" value="calm" checked><div><b>Calm and matter-of-fact</b> <em class="badge">Studio's pick</em><p>"Putting one card in three categories on Archidekt? That's a lot of clicking."</p></div></label>
-        <label class="tone"><input type="radio" name="tone" value="curious"><div><b>Curious and nerdy</b><p>"I wanted my own copy of every Magic card ever printed. So I asked for one."</p></div></label>
-        <label class="tone"><input type="radio" name="tone" value="dry"><div><b>Dry and deadpan</b><p>"Archidekt makes you tag cards one menu at a time. My deck has 99 cards."</p></div></label>
-      </div>
+      <p class="story-line" id="story-line"></p>
+      <div class="tones" id="tones"></div>
     </section>
 
     <!-- 4. Script and storyboard -->
@@ -83,7 +76,7 @@
         </div>
         <div class="script-side">
           <div class="direction">
-            <b>Story:</b> before and after. A clicking chore, one prompt to Studio, then the app makes it effortless.
+            <b>Story:</b> <span id="direction-text"></span>
             <button class="ghost small" id="other-directions">See other directions</button>
           </div>
           <ol class="script-lines" id="script-lines"></ol>
@@ -98,21 +91,11 @@
     <!-- 5. Footage -->
     <section class="step" data-step="footage" hidden>
       <h1>Screen footage</h1>
-      <p class="lede">Studio filmed your app on a made-up deck, plus your two prompts from the build chat. Check nothing private shows.</p>
-      <div class="clips">
-        <figure><video src="/_media/deck-list-reel/shots/2-first-prompt.mp4" muted loop playsinline></video><figcaption>2. Your first prompt</figcaption></figure>
-        <figure><video src="/_media/deck-list-reel/shots/3-scryfall-count.mp4" muted loop playsinline></video><figcaption>3. 39,000 cards counter</figcaption></figure>
-        <figure><video src="/_media/deck-list-reel/shots/4-second-prompt.mp4" muted loop playsinline></video><figcaption>4. Your second prompt</figcaption></figure>
-        <figure><video src="/_media/deck-list-reel/shots/5-search.mp4" muted loop playsinline></video><figcaption>5. Search</figcaption></figure>
-        <figure><video src="/_media/deck-list-reel/shots/6-drag-to-tag.mp4" muted loop playsinline></video><figcaption>6. Drag to tag</figcaption></figure>
-        <figure><video src="/_media/deck-list-reel/shots/8-end-card.mp4" muted loop playsinline></video><figcaption>8. End card</figcaption></figure>
-      </div>
+      <p class="lede">Studio filmed your app on made-up data, plus your prompts from the chat you built it in. Check nothing private shows.</p>
+      <div class="clips" id="clips"></div>
       <div class="privacy">
         <b>Studio's privacy check</b>
-        <ul>
-          <li>Your first prompt ends with part of your email address. It gets cropped out.</li>
-          <li>Everything in the app shots is made up. Your real lists never show.</li>
-        </ul>
+        <ul id="privacy-list"></ul>
         <label><input type="checkbox" checked> I've looked, nothing private shows</label>
       </div>
     </section>
@@ -149,14 +132,10 @@
     <section class="step" data-step="edit" hidden>
       <h1>Your reel <span class="version" id="edit-version">Version 1</span></h1>
       <div class="edit-layout">
-        <video class="final" src="/_media/deck-list-reel/deck-list-reel.mp4" controls playsinline></video>
+        <video class="final" id="final-video" controls playsinline></video>
         <div>
-          <ul class="checklist">
-            <li class="done">Pauses and "um"s cut, every word kept</li>
-            <li class="done">Captions match what you said</li>
-            <li class="done">Music written for this reel</li>
-            <li class="done">Footage laid over your voice</li>
-          </ul>
+          <ul class="checklist" id="reel-checks"></ul>
+          <ul class="reel-notes" id="reel-notes"></ul>
           <p class="note">Studio can't hear. Watch it with sound on before you post it.</p>
           <div class="share" id="desk-share"></div>
           <div class="ask">
@@ -171,9 +150,11 @@
     <!-- Studio is working: shown between steps while the reel agent does its part -->
     <section class="step pending" data-step="pending" hidden>
       <div class="pending-mark" aria-hidden="true"><span></span><span></span><span></span></div>
-      <h1 id="pending-title">Studio is writing your script</h1>
+      <h1 id="pending-title">Studio is working</h1>
       <p class="lede" id="pending-lede">Nothing for you to do right now. You can leave this window open or close it; Studio will let you know when it's ready.</p>
       <ol class="pending-list" id="pending-list"></ol>
+      <p class="pending-error" id="pending-error" hidden></p>
+      <p class="note pending-aside"><a class="subtle-link" id="pending-chat" href="#" target="_blank" hidden>Watch Studio work in its chat</a></p>
       <p class="note pending-aside">While you wait: <a class="subtle-link" href="/_media/deck-list-reel/deck-list-reel.mp4" target="_blank">watch a finished reel</a></p>
       <button class="ghost small" id="skip-wait">Skip the wait (mock only)</button>
     </section>

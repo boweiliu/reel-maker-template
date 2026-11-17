@@ -9,9 +9,11 @@ Studio. It is the app around Lauren's `make-app-reel` skill (shipped unchanged i
 the interview as a survey, see the script play as a storyboard, film your take on your phone from a QR code, and get
 the finished reel with save and share buttons.
 
-**Status: clickable mock.** Every screen works and is laid out for computer and phone, but the content is hard-coded
-(Bowei's Deck List reel). Nothing calls an agent yet; "Pretend..." and "Skip the wait" buttons stand in for Studio's
-work. The real flow is the next piece of work (see `docs/design.md`, "What the real version adds").
+**Status: working.** Picking an app starts a Studio chat for the reel (the reel agent), which follows Lauren's skill
+and talks to the app through files in the reel's folder (`docs/agent-contract.md`). Run end to end with a real chat on
+2026-11-17 on the Deck List app: interview, tones, script, footage, a real take uploaded, and the edit (a 27 second
+reel). Filming needed one retry after the workspace ran low on memory; the agent now gets low-memory filming rules.
+Asking for a new cut of a finished reel has been checked with a stand-in agent only.
 
 ## What you can try
 
@@ -29,7 +31,8 @@ One Flask server (`src/reel_maker/runner.py`) serves two pages and their scripts
 
 | Part | Where |
 | --- | --- |
-| Server: pages, QR codes, example videos, the app's public address | `src/reel_maker/runner.py` |
+| Server: pages, QR codes, example videos, the app's public address, the reel API | `src/reel_maker/runner.py` |
+| Reels on disk and their Studio chats | `src/reel_maker/reels.py`, `docs/agent-contract.md` |
 | Walkthrough (computer and phone layouts) | `src/reel_maker/assets/wizard.html`, `wizard.js` |
 | Phone page: script and record button | `src/reel_maker/assets/phone.html`, `phone.js` |
 | Save and share the finished reel | `src/reel_maker/assets/share.js` |
@@ -55,4 +58,4 @@ Tests (from the repo folder):
 uv run --no-sync --project . pytest -q src test_reel_maker_ratchets.py
 ```
 
-More in `docs/`: `setup.md`, `operations.md`, `design.md`, `tests.md`.
+More in `docs/`: `setup.md`, `operations.md`, `design.md`, `agent-contract.md`, `tests.md`.

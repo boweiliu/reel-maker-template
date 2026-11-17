@@ -9,7 +9,7 @@
 </head>
 <body class="phone">
 <header class="phone-head">
-  <div class="brand"><img src="/icon.svg" alt="" width="24" height="24"> Deck List reel</div>
+  <div class="brand"><img src="/icon.svg" alt="" width="24" height="24"> <span id="phone-title">Your reel</span></div>
   <details class="phone-tips">
     <summary>How to film it</summary>
     <ol>
@@ -26,7 +26,7 @@
 
 <section class="phone-ready" id="phone-ready" hidden>
   <h2>Your reel is ready</h2>
-  <video src="/_media/deck-list-reel/deck-list-reel.mp4" controls playsinline preload="metadata"></video>
+  <video id="ready-video" controls playsinline preload="metadata"></video>
   <div class="share" id="phone-share"></div>
 </section>
 
@@ -35,6 +35,7 @@
   <div id="take-list"></div>
 </section>
 
+<p class="phone-message" id="phone-message" hidden></p>
 <main class="prompter" id="prompter"></main>
 
 <footer class="record-bar">
@@ -42,6 +43,7 @@
     <input type="file" accept="video/*" capture="user" id="record-input">
     <span class="rec-dot"></span><span id="record-text">Record your take</span>
   </label>
+  <div class="upload-progress" id="upload-progress" hidden><i id="upload-bar"></i><span id="upload-text"></span></div>
 </footer>
 <script src="/_assets/share.js"></script>
 <script src="/_assets/phone.js"></script>

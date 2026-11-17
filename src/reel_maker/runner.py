@@ -35,7 +35,9 @@ import html
 import io
 import os
 import time
+import tomllib
 from pathlib import Path
+from typing import Any
 
 from app_schema.api_schema import (
     DEFAULT_API_SCHEMA_PATH,
@@ -46,13 +48,15 @@ from app_schema.api_schema import (
 )
 import requests
 import segno
-from app_schema.routes import error_response, model_response
+from app_schema.routes import error_response, model_response, parse_request_body
 from flask import Flask, Response, abort, request, send_file
 from imbue.imbue_common.frozen_model import FrozenModel
 from imbue.imbue_common.logging import setup_logging
 from loguru import logger
 from pydantic import Field
 from werkzeug.serving import run_simple
+
+from reel_maker import reels
 
 # Persistent state for this app lives under DATA_DIR. It defaults to
 # ``data/.apps/reel-maker/`` but is overridable via the ``REEL_MAKER_DATA_DIR`` env var
@@ -157,7 +161,71 @@ class HealthResponse(FrozenModel):
 # is checked against (build-app skill, "The app describes its own API"): a route that reads or
 # answers JSON names its pydantic models here and uses ``parse_request_body`` and
 # ``model_response``; a page, a file or a stream is declared schemaless with the reason.
+class AppChoice(FrozenModel):
+    """An app the creator built, which a reel can be about."""
+
+    name: str = Field(description="The app's registered name")
+    display_name: str = Field(description="What the creator calls the app")
+    description: str = Field(description="One line on what the app is for")
+    icon: str = Field(description="The app's icon as an SVG document")
+
+
+class AppListResponse(FrozenModel):
+    """The apps a reel can be about."""
+
+    apps: list[AppChoice] = Field(description="The creator's own apps, in the launcher's order")
+
+
+class CreateReelRequest(FrozenModel):
+    """Start a reel about one app."""
+
+    app: str = Field(description="The registered name of the app the reel is about")
+
+
+class ReelResponse(FrozenModel):
+    """Everything about one reel: the app's record, Studio's outputs so far, the takes."""
+
+    reel: dict[str, Any] = Field(description="The reel's files by name (see docs/agent-contract.md), its takes and id")
+
+
+class ReelListResponse(FrozenModel):
+    """The reels made in this workspace, newest first."""
+
+    reels: list[dict[str, Any]] = Field(description="Each reel's id, app, creation time and chat id")
+
+
+class AdvanceRequest(FrozenModel):
+    """Ask Studio to do the next stage of a reel, with the creator's inputs for it."""
+
+    stage: str = Field(description="story, script, revise-script, footage, edit or revise-reel")
+    inputs: dict[str, Any] = Field(
+        default_factory=dict, description="Files to write first, by name: answers, choice, script or change"
+    )
+
+
+class ChooseTakeRequest(FrozenModel):
+    """Pick which take the reel is cut from."""
+
+    take: str = Field(description="The take's file name, as listed in the reel's takes")
+
+
+class TakeResponse(FrozenModel):
+    """A take stored from the phone."""
+
+    name: str = Field(description="The take's file name")
+    number: int = Field(description="Which take this is, counting from 1")
+    bytes: int = Field(description="Its size")
+
+
 ROUTE_TABLE: RouteTable = {
+    ("GET", "/api/apps"): RouteModels(response_model=AppListResponse),
+    ("GET", "/api/reels"): RouteModels(response_model=ReelListResponse),
+    ("POST", "/api/reels"): RouteModels(request_model=CreateReelRequest, response_model=ReelResponse, success_status=201),
+    ("GET", "/api/reels/{reel_id}"): RouteModels(response_model=ReelResponse),
+    ("POST", "/api/reels/{reel_id}/advance"): RouteModels(request_model=AdvanceRequest, response_model=ReelResponse),
+    ("POST", "/api/reels/{reel_id}/takes"): RouteModels(response_model=TakeResponse, success_status=201),
+    ("POST", "/api/reels/{reel_id}/choose-take"): RouteModels(request_model=ChooseTakeRequest, response_model=ReelResponse),
+    ("GET", "/api/reels/{reel_id}/files/{name}"): SchemalessRoute(reason="a video from the reel: footage, a take or the reel"),
     ("GET", "/"): SchemalessRoute(reason="the app's page"),
     ("GET", "/phone"): SchemalessRoute(reason="the phone page: the script and the record button"),
     ("GET", "/_assets/{basename}"): SchemalessRoute(reason="a script or style the pages load"),
@@ -185,7 +253,7 @@ def add_content_security_policy(response: Response) -> Response:
 
 
 # When the shell was last asked (0 for never) and what it answered.
-_public_address_cache: dict[str, float | str | None] = {"asked_at": 0.0, "address": None}
+_public_address_cache: dict[str, float | str | None] = {"asked_at": 0.0, "address": None, "chat_address": None}
 
 
 def public_address() -> str | None:
@@ -207,12 +275,17 @@ def public_address() -> str | None:
     found = next((entry.get("share_url") for entry in entries if entry.get("name") == APP_NAME), None)
     _public_address_cache["asked_at"] = time.monotonic()
     _public_address_cache["address"] = found
+    _public_address_cache["chat_address"] = next(
+        (entry.get("share_url") for entry in entries if entry.get("name") == "chat"), None
+    )
     return found
 
 
 def render_page(basename: str) -> Response:
     page = (ASSETS_DIR / basename).read_text().replace("__SHELL_PAGE_SCRIPT__", SHELL_PAGE_SCRIPT)
-    page = page.replace("<body ", f'<body data-public-address="{html.escape(public_address() or "", quote=True)}" ', 1)
+    address = html.escape(public_address() or "", quote=True)
+    chat_address = html.escape(str(_public_address_cache["chat_address"] or ""), quote=True)
+    page = page.replace("<body ", f'<body data-public-address="{address}" data-chat-address="{chat_address}" ', 1)
     return Response(page, mimetype="text/html")
 
 
@@ -267,6 +340,118 @@ def media(name: str) -> Response:
     if name not in EXAMPLE_MEDIA_FILES:
         abort(404)
     return send_file((EXAMPLE_MEDIA_DIR / name).absolute(), mimetype="video/mp4", conditional=True)
+
+
+APPS_REGISTRY = Path(os.environ.get("REEL_MAKER_APPS_FILE", "data/.state/apps.toml"))
+
+
+def creator_apps() -> list[AppChoice]:
+    """The apps the creator built (the user-made ones in the workspace's registry), this one left out."""
+    try:
+        registry = tomllib.loads(APPS_REGISTRY.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return []
+    entries = registry.get("apps") or registry.get("app") or []
+    return [
+        AppChoice(
+            name=str(entry.get("name", "")),
+            display_name=str(entry.get("display_name") or entry.get("name", "")),
+            description=str(entry.get("description", "")),
+            icon=str(entry.get("icon", "")),
+        )
+        for entry in entries
+        if entry.get("priority") == "user" and not entry.get("internal") and entry.get("name") != APP_NAME
+    ]
+
+
+def reel_answer(reel_id: str, status: int = 200) -> Response:
+    return model_response(ReelResponse(reel=reels.reel_snapshot(DATA_DIR, reel_id)), status)
+
+
+@app.route("/api/apps")
+def list_apps() -> Response:
+    """The apps a reel can be about: the ones the creator built in this workspace."""
+    return model_response(AppListResponse(apps=creator_apps()))
+
+
+@app.route("/api/reels", methods=["GET"])
+def list_reels() -> Response:
+    """The reels made in this workspace, newest first."""
+    return model_response(ReelListResponse(reels=reels.list_reels(DATA_DIR)))
+
+
+@app.route("/api/reels", methods=["POST"])
+def create_reel() -> Response:
+    """Start a reel about an app: Studio opens a chat for it and starts reading up on the app."""
+    body = parse_request_body(CreateReelRequest)
+    chosen = next((choice for choice in creator_apps() if choice.name == body.app), None)
+    if chosen is None:
+        return error_response("That app isn't one you built in this workspace.", 400)
+    try:
+        reel_id = reels.create_reel(DATA_DIR, chosen.model_dump(exclude={"icon"}), reels.start_agent_through_chat_app)
+    except reels.ReelError as error:
+        return error_response(str(error), 502)
+    return reel_answer(reel_id, 201)
+
+
+@app.route("/api/reels/<reel_id>")
+def get_reel(reel_id: str) -> Response:
+    """One reel: Studio's outputs so far, what it is doing now, and the takes."""
+    try:
+        return reel_answer(reel_id)
+    except reels.ReelError as error:
+        return error_response(str(error), 404)
+
+
+@app.route("/api/reels/<reel_id>/advance", methods=["POST"])
+def advance_reel(reel_id: str) -> Response:
+    """Save the creator's inputs for the next stage and ask Studio to do it."""
+    body = parse_request_body(AdvanceRequest)
+    try:
+        reels.advance(DATA_DIR, reel_id, body.stage, body.inputs, reels.send_through_chat_app)
+        return reel_answer(reel_id)
+    except reels.ReelError as error:
+        return error_response(str(error), 409)
+
+
+@app.route("/api/reels/<reel_id>/takes", methods=["POST"])
+def upload_take(reel_id: str) -> Response:
+    """Store a take recorded on the phone; the newest take is the one the reel is cut from until another is picked."""
+    # The body is the video itself, streamed to disk: a multipart form would be spooled through /tmp first.
+    if not (request.mimetype or "").startswith("video/"):
+        return error_response("Send the video itself as the body, with its video content type.", 400)
+    try:
+        saved = reels.save_take(DATA_DIR, reel_id, request.mimetype, request.stream)
+    except reels.ReelError as error:
+        return error_response(str(error), 400)
+    return model_response(TakeResponse(**saved), 201)
+
+
+@app.route("/api/reels/<reel_id>/choose-take", methods=["POST"])
+def choose_take(reel_id: str) -> Response:
+    """Pick which take the reel is cut from."""
+    body = parse_request_body(ChooseTakeRequest)
+    try:
+        reels.choose_take(DATA_DIR, reel_id, body.take)
+        return reel_answer(reel_id)
+    except reels.ReelError as error:
+        return error_response(str(error), 400)
+
+
+@app.route("/api/reels/<reel_id>/files/<path:name>")
+def reel_file(reel_id: str, name: str) -> Response:
+    """A video from the reel's folder: a footage clip, a take, or the finished reel."""
+    try:
+        folder = reels.reel_dir(DATA_DIR, reel_id).resolve()
+    except reels.ReelError:
+        abort(404)
+    target = (folder / name).resolve()
+    if folder not in target.parents or target.suffix.lower() not in (".mp4", ".mov", ".webm", ".m4v", ".3gp"):
+        abort(404)
+    if not target.is_file():
+        abort(404)
+    download = request.args.get("download") == "1"
+    return send_file(target, conditional=True, as_attachment=download, download_name=target.name)
 
 
 @app.route("/_csp-report", methods=["POST"])
