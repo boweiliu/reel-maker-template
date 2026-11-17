@@ -94,10 +94,10 @@ const STAGES = {
   research: { title: (app) => `Studio is reading up on ${app}`, items: ["Finding the chat you built it in", "Pulling out your first prompt", "Making a first guess at each answer"], lands: "interview" },
   story: { title: () => "Studio is finding your story", items: ["Reading your answers", "Picking the tones that fit"], lands: "tone" },
   script: { title: () => "Studio is writing your script", items: ["Finding the hook", "Trying story directions", "Writing every line", "Planning what's on screen"], lands: "script" },
-  "revise-script": { title: () => "Studio is rewriting your script", items: ["Reading your note", "Rewriting the lines it touches", "Checking the story still holds"], lands: "script" },
+  "script-change": { stage: "script", title: () => "Studio is rewriting your script", items: ["Reading your note", "Rewriting the lines it touches", "Checking the story still holds"], lands: "script" },
   footage: { title: (app) => `Studio is filming ${app}`, items: ["Setting up a private copy with made-up data", "Filming your prompts from the build chat", "Filming the app", "Making the end card", "Checking nothing private shows"], lands: "footage" },
   edit: { title: () => "Studio is editing your reel", items: ["Cutting pauses, keeping every word", "Writing the captions", "Writing music for this reel", "Laying footage over your voice", "Checking every word survived"], lands: "edit" },
-  "revise-reel": { title: () => "Studio is making your changes", items: ["Reading your note", "Re-cutting the reel", "Checking every word survived"], lands: "edit" },
+  "edit-change": { stage: "edit", title: () => "Studio is making your changes", items: ["Reading your note", "Re-cutting the reel", "Checking every word survived"], lands: "edit" },
 };
 
 const SHOT_LOOK = {
@@ -115,15 +115,17 @@ let answers = [];
 let script = [];
 let selectedApp = "";
 let pendingStage = null;
+let pendingDisplay = null;
 let pollTimer = null;
 let takesTimer = null;
 const done = new Set();
 
 const $ = (id) => document.getElementById(id);
 const escapeHtml = (text) => String(text ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-const appName = () => reel?.interview?.app || reel?.request?.app?.display_name || "your app";
+const appName = () => reel?.request?.app?.display_name || "your app";
 const mediaUrl = (file) => (EXAMPLE ? `/_media/deck-list-reel/${file}` : `/api/reels/${reelId}/files/${file}`);
-const reelVideoUrl = () => (EXAMPLE ? "/_media/deck-list-reel/deck-list-reel.mp4" : `/api/reels/${reelId}/files/reel.mp4?v=${reel?.reel?.version || 1}`);
+const cutNumber = () => reel?.state?.cuts || 1;
+const reelVideoUrl = () => (EXAMPLE ? "/_media/deck-list-reel/deck-list-reel.mp4" : `/api/reels/${reelId}/files/reel.mp4?v=${cutNumber()}`);
 
 async function api(path, options = {}) {
   const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
@@ -244,10 +246,9 @@ function renderScript() {
   $("other-directions").hidden = directions.length < 2;
   $("script-lines").innerHTML = script.map((line, i) => `
     <li data-line="${i}">
-      <div class="say" contenteditable="true" spellcheck="false">${escapeHtml(line.say)}</div>
+      <div class="say">${escapeHtml(line.say)}</div>
       <div class="screen-note">On screen: ${escapeHtml(line.screen)}</div>
     </li>`).join("");
-  $("script-lines").querySelectorAll(".say").forEach((el, i) => el.addEventListener("input", () => { script[i].say = el.textContent; }));
   const total = script.reduce((sum, l) => sum + secondsFor(l.say), 0);
   $("animatic-time").textContent = `0:00 / ${fmt(total)}`;
   if (script.length) showBeat(0);
@@ -331,7 +332,7 @@ function renderTakes() {
 // ---- Step 7: the reel ----
 function renderEdit() {
   const result = reel.reel || {};
-  $("edit-version").textContent = `Version ${result.version || 1}`;
+  $("edit-version").textContent = `Version ${EXAMPLE ? result.version || 1 : cutNumber()}`;
   if ($("final-video").dataset.src !== reelVideoUrl()) {
     $("final-video").src = reelVideoUrl();
     $("final-video").dataset.src = reelVideoUrl();
@@ -343,22 +344,28 @@ function renderEdit() {
 }
 
 // ---- Waiting on Studio ----
-function showPending(stage, landsOn) {
+// ``display`` picks the waiting screen's words (a change request reads differently); the stage is what Studio runs.
+function showPending(display, landsOn) {
   clearTimeout(pollTimer);
-  pendingStage = stage;
-  current = stepIndex(landsOn ?? STAGES[stage].lands);
+  pendingDisplay = display;
+  pendingStage = STAGES[display].stage || display;
+  current = stepIndex(landsOn ?? STAGES[display].lands);
+  for (let j = 0; j < current; j += 1) done.add(j);
+  $("project-name").textContent = reel ? `${appName()} reel` : "";
   document.querySelectorAll(".step").forEach((el) => { el.hidden = el.dataset.step !== "pending"; });
   document.querySelectorAll(".step video").forEach((v) => v.pause());
   document.querySelector(".step-nav").hidden = true;
-  $("pending-title").textContent = STAGES[stage].title(appName());
-  $("pending-error").hidden = true;
+  $("pending-title").textContent = STAGES[display].title(appName());
+  $("pending-health").hidden = true;
+  $("pending-history").innerHTML = "";
+  $("pending-live").textContent = "";
   $("skip-wait").hidden = !EXAMPLE;
   const link = chatLink();
   $("pending-chat").hidden = !link;
   $("pending-chat").href = link || "#";
   renderStepper();
   $("panel").scrollTop = 0;
-  if (EXAMPLE) { tickExample(STAGES[stage].items, 0); return; }
+  if (EXAMPLE) { tickExample(STAGES[display].items, 0); return; }
   poll();
 }
 
@@ -380,29 +387,43 @@ async function poll() {
     return;
   }
   const status = reel.status || {};
-  const items = status.items?.length ? status.items : STAGES[pendingStage].items.map((label, i) => ({ label, state: i === 0 ? "active" : "todo" }));
-  drawItems(items);
+  // What Studio does in this step; the agent reports only done or failed, so the list is the app's own.
+  drawItems(STAGES[pendingDisplay].items.map((label) => ({ label, state: "todo" })));
   if (status.stage === pendingStage && status.state === "done") {
     answers = [];
     go(current);
     return;
   }
-  if (status.stage === pendingStage && status.state === "failed") {
-    $("pending-error").hidden = false;
-    $("pending-error").textContent = `Studio got stuck: ${status.error || "it didn't say why"}. Open its chat to see what happened, or go back and try again.`;
-    document.querySelector(".step-nav").hidden = false;
-    $("next").hidden = true;
-    return;
-  }
+  drawHealth(status, reel.health || {});
   pollTimer = setTimeout(poll, 2500);
 }
 
-async function advance(stage, inputs, landsOn) {
-  if (EXAMPLE) { showPending(stage, landsOn); return; }
+const ago = (seconds) => (seconds < 60 ? `${Math.max(1, Math.round(seconds))} seconds` : `${Math.round(seconds / 60)} min`);
+
+// What the app's watcher knows about Studio's chat for this step (see watchdog.py): how long it has been at it,
+// when it last did anything, and anything that went wrong and what the app did about it.
+function drawHealth(status, health) {
+  const now = Date.now() / 1000;
+  const sameStep = health.stage === status.stage && health.requested_at === status.requested_at;
+  let live = status.requested_at ? `Working on this for ${ago(now - status.requested_at)}.` : "";
+  if (sameStep && health.last_activity_at) live += ` Studio's chat last did something ${ago(now - health.last_activity_at)} ago.`;
+  $("pending-live").textContent = live;
+  const message = sameStep ? health.message : "";
+  $("pending-health").hidden = !message;
+  $("pending-health").className = `pending-health ${health.condition === "gave_up" ? "stuck" : ""}`;
+  $("pending-health-text").textContent = message || "";
+  $("pending-retry").hidden = !(sameStep && health.condition === "gave_up");
+  $("pending-history").innerHTML = (health.history || []).map((item) =>
+    `<li>${new Date(item.at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}: ${escapeHtml(item.text)}</li>`).join("");
+}
+
+async function advance(display, inputs, landsOn) {
+  if (EXAMPLE) { showPending(display, landsOn); return; }
+  const stage = STAGES[display].stage || display;
   $("next").disabled = true;
   try {
     reel = (await api(`/api/reels/${reelId}/advance`, { method: "POST", body: JSON.stringify({ stage, inputs }) })).reel;
-    showPending(stage, landsOn);
+    showPending(display, landsOn);
   } catch (error) {
     $("next").disabled = false;
     alert(error.message);
@@ -433,7 +454,7 @@ $("next").addEventListener("click", async () => {
     const direction = reel.tones?.directions?.find((d) => d.recommended)?.key || "";
     return advance("script", { choice: { tone, direction } });
   }
-  if (key === "script") return advance("footage", { script: { ...reel.script, lines: script } });
+  if (key === "script") return advance("footage", {});
   if (key === "footage") { go(stepIndex("film")); return; }
   if (key === "film") return advance("edit", { choice: { take: reel.choice?.take || reel.takes[reel.takes.length - 1]?.name } });
 });
@@ -444,6 +465,11 @@ $("q-next").addEventListener("click", () => {
 });
 $("q-prev").addEventListener("click", () => { if (question > 0) { question -= 1; renderQuestion(); } });
 $("skip-wait").addEventListener("click", () => go(current));
+$("pending-retry").addEventListener("click", async () => {
+  $("pending-retry").disabled = true;
+  try { reel = (await api(`/api/reels/${reelId}/retry`, { method: "POST" })).reel; } catch (error) { alert(error.message); }
+  $("pending-retry").disabled = false;
+});
 $("animatic-play").addEventListener("click", playAnimatic);
 $("other-directions").addEventListener("click", () => {
   const directions = reel.tones?.directions || [];
@@ -455,14 +481,14 @@ $("script-ask-send").addEventListener("click", () => {
   const text = $("script-ask").value.trim();
   if (!text) return;
   $("script-ask").value = "";
-  advance("revise-script", { script: { ...reel.script, lines: script }, change: { text } }, "script");
+  advance("script-change", { change: { text } }, "script");
 });
 $("edit-ask-send").addEventListener("click", () => {
   const text = $("edit-ask").value.trim();
   if (!text) return;
   $("edit-ask").value = "";
   if (EXAMPLE && reel.reel) reel.reel.version = (reel.reel.version || 1) + 1;
-  advance("revise-reel", { change: { text } }, "edit");
+  advance("edit-change", { change: { text } }, "edit");
 });
 $("copy-phone-url").addEventListener("click", async () => {
   await navigator.clipboard.writeText($("phone-url").href);

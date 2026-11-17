@@ -101,14 +101,14 @@ async function refresh() {
   const response = await fetch(`/api/reels/${encodeURIComponent(reelId)}`);
   if (!response.ok) { showMessage("This reel couldn't be found. Scan the code on your computer again."); return; }
   reel = (await response.json()).reel;
-  $("phone-title").textContent = `${reel.interview?.app || reel.request?.app?.display_name || "Your"} reel`;
+  $("phone-title").textContent = `${reel.request?.app?.display_name || "Your"} reel`;
   const lines = (reel.script?.lines || []).map((line) => line.say);
   renderScript(lines);
   showMessage(lines.length ? "" : "Studio hasn't written your script yet. Finish the steps on your computer first.");
   if (!uploading) renderTakes();
-  const version = reel.reel?.version;
+  const version = reel.state?.cuts || 1;
   // Only a finished cut: while Studio is editing, the file may be half written.
-  const editing = ["edit", "revise-reel"].includes(reel.status?.stage) && reel.status?.state !== "done";
+  const editing = reel.status?.stage === "edit" && reel.status?.state !== "done";
   if (reel.has_reel_video && reel.reel && !editing && version !== shownReelVersion) {
     shownReelVersion = version;
     const slug = (reel.request?.app?.name || "my-app").replace(/[^a-z0-9-]/gi, "");

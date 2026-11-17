@@ -9,11 +9,10 @@ Studio. It is the app around Lauren's `make-app-reel` skill (shipped unchanged i
 the interview as a survey, see the script play as a storyboard, film your take on your phone from a QR code, and get
 the finished reel with save and share buttons.
 
-**Status: working.** Picking an app starts a Studio chat for the reel (the reel agent), which follows Lauren's skill
-and talks to the app through files in the reel's folder (`docs/agent-contract.md`). Run end to end with a real chat on
-2026-11-17 on the Deck List app: interview, tones, script, footage, a real take uploaded, and the edit (a 27 second
-reel). Filming needed one retry after the workspace ran low on memory; the agent now gets low-memory filming rules.
-Asking for a new cut of a finished reel has been checked with a stand-in agent only.
+**Status: working.** Picking an app starts a Studio chat for the reel (the reel agent), which follows Lauren's skill,
+read from the copy in `skills/make-app-reel/` and left unchanged. The app adds only a short agreement on where to put
+the work (`docs/agent-contract.md`, about 30 lines). The app watches each chat and repairs a stall itself
+(`src/reel_maker/watchdog.py`). Run end to end with a real chat on 2026-11-17 on the Deck List app.
 
 ## What you can try
 
@@ -33,6 +32,7 @@ One Flask server (`src/reel_maker/runner.py`) serves two pages and their scripts
 | --- | --- |
 | Server: pages, QR codes, example videos, the app's public address, the reel API | `src/reel_maker/runner.py` |
 | Reels on disk and their Studio chats | `src/reel_maker/reels.py`, `docs/agent-contract.md` |
+| Noticing a stalled chat, telling the creator, repairing it | `src/reel_maker/watchdog.py` |
 | Walkthrough (computer and phone layouts) | `src/reel_maker/assets/wizard.html`, `wizard.js` |
 | Phone page: script and record button | `src/reel_maker/assets/phone.html`, `phone.js` |
 | Save and share the finished reel | `src/reel_maker/assets/share.js` |

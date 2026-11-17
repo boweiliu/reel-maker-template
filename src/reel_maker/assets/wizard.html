@@ -63,7 +63,7 @@
     <!-- 4. Script and storyboard -->
     <section class="step" data-step="script" hidden>
       <h1>Your reel, beat by beat</h1>
-      <p class="lede">Press play to see roughly how it'll run. Click any line to change the words.</p>
+      <p class="lede">Press play to see roughly how it'll run. To change any words, ask Studio below.</p>
       <div class="script-layout">
         <div class="phone-frame" id="animatic">
           <div class="screen">
@@ -153,7 +153,12 @@
       <h1 id="pending-title">Studio is working</h1>
       <p class="lede" id="pending-lede">Nothing for you to do right now. You can leave this window open or close it; Studio will let you know when it's ready.</p>
       <ol class="pending-list" id="pending-list"></ol>
-      <p class="pending-error" id="pending-error" hidden></p>
+      <p class="note pending-live" id="pending-live"></p>
+      <div class="pending-health" id="pending-health" hidden>
+        <p id="pending-health-text"></p>
+        <button class="primary small" id="pending-retry" hidden>Try again</button>
+      </div>
+      <ul class="pending-history" id="pending-history"></ul>
       <p class="note pending-aside"><a class="subtle-link" id="pending-chat" href="#" target="_blank" hidden>Watch Studio work in its chat</a></p>
       <p class="note pending-aside">While you wait: <a class="subtle-link" href="/_media/deck-list-reel/deck-list-reel.mp4" target="_blank">watch a finished reel</a></p>
       <button class="ghost small" id="skip-wait">Skip the wait (mock only)</button>

@@ -28,27 +28,26 @@ STAGE_OUTPUTS = {
     "research": "interview.json",
     "story": "tones.json",
     "script": "script.json",
-    "revise-script": "script.json",
     "footage": "footage.json",
     "edit": "reel.json",
-    "revise-reel": "reel.json",
 }
+# Stages a change request can be sent with (a new script, a new cut).
+CHANGEABLE_STAGES = {"script", "edit"}
 # What the agent's outputs and the creator's inputs are called in a reel's folder.
 JSON_FILES = (
     "request.json", "interview.json", "answers.json", "tones.json", "choice.json", "script.json",
-    "footage.json", "reel.json", "change.json", "status.json", "state.json",
+    "footage.json", "reel.json", "change.json", "status.json", "state.json", "health.json",
 )
+# The files only the app writes; a stage's inputs can never overwrite them.
+APP_ONLY_FILES = ("status", "state", "health")
 REEL_ID_PATTERN = re.compile(r"^[a-z0-9]{12}$")
 TAKE_PATTERN = re.compile(r"^take-(\d+)\.(mp4|mov|webm|m4v|3gp)$")
 VIDEO_SUFFIXES = {"video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm", "video/x-m4v": "m4v", "video/3gpp": "3gp"}
 
-CONTRACT_PATH = Path(__file__).resolve().parents[2] / "docs" / "agent-contract.md"
-# Filming and editing are what the memory guard stops; the contract's "Memory is tight" rule says how to stay under it.
-HEAVY_STAGES = {"footage", "edit", "revise-reel"}
-HEAVY_STAGE_NOTE = (
-    "\nRe-read the contract's \"Memory is tight\" rule before you start: one shot per process, 720x1280 frames, "
-    "browser closed before encoding. Keep any clips already in the folder and carry on from the first missing one."
-)
+REPO = Path(__file__).resolve().parents[2]
+CONTRACT_PATH = REPO / "docs" / "agent-contract.md"
+# Lauren's skill, shipped with the app unchanged: the reel agent reads it from here, not from the workspace's skills.
+SKILL_PATH = REPO / "skills" / "make-app-reel" / "SKILL.md"
 
 
 class ReelError(Exception):
@@ -151,29 +150,13 @@ def choose_take(data_dir: Path, reel_id: str, take_name: str) -> None:
 
 
 def kickoff_message(folder: Path, app_name: str) -> str:
-    return (
-        f"You are the reel agent for a Reel maker reel about the app \"{app_name}\". Follow the make-app-reel skill "
-        f"(.agents/skills/make-app-reel/SKILL.md), but the creator talks to you through the Reel maker app, never in "
-        f"this chat. Read {CONTRACT_PATH} first: it says which files to read and write in the reel folder "
-        f"{folder.resolve()}, how to keep status.json current, and that you do one stage per message and then stop.\n\n"
-        + stage_message(folder, "research")
+    return f"Make a reel about \"{app_name}\" with {SKILL_PATH}. Hand it over as {CONTRACT_PATH} says.\n\n" + stage_message(
+        folder, "research"
     )
 
 
-def stage_message(folder: Path, stage: str, changed: tuple[str, ...] = ()) -> str:
-    output = STAGE_OUTPUTS[stage]
-    # The creator can edit what the agent wrote (the script, above all); the agent must work from the saved files.
-    fresh = (
-        f"The creator just saved {', '.join(f'{name}.json' for name in changed)}. Read them again now: they replace "
-        "anything you remember writing, and this stage must follow them exactly.\n"
-        if changed
-        else ""
-    )
-    return (
-        f"REEL STAGE: {stage}\nReel folder: {folder.resolve()}\n{fresh}"
-        f"Do the {stage} stage as {CONTRACT_PATH} describes, write {output}, set status.json to done, and stop."
-        + (HEAVY_STAGE_NOTE if stage in HEAVY_STAGES else "")
-    )
+def stage_message(folder: Path, stage: str) -> str:
+    return f"REEL STAGE: {stage}\nReel folder: {folder.resolve()}"
 
 
 def mark_working(folder: Path, stage: str) -> None:
@@ -196,7 +179,7 @@ def create_reel(data_dir: Path, app: dict[str, str], start_agent: Callable[[Path
 
 def advance(data_dir: Path, reel_id: str, stage: str, inputs: dict[str, Any], send: Callable[[str, str], None]) -> None:
     """Write the creator's inputs for a stage and ask the reel agent to do it."""
-    if stage not in STAGE_OUTPUTS or stage == "research":
+    if stage not in STAGE_OUTPUTS or stage == "research" or (stage not in CHANGEABLE_STAGES and "change" in inputs):
         raise ReelError("Studio can't do that step.")
     folder = reel_dir(data_dir, reel_id)
     state = read_json(folder, "state.json") or {}
@@ -206,13 +189,19 @@ def advance(data_dir: Path, reel_id: str, stage: str, inputs: dict[str, Any], se
     if status.get("state") == "working":
         raise ReelError("Studio is still working on the last step. Wait for it to finish.")
     for name, value in inputs.items():
-        if f"{name}.json" not in JSON_FILES or name in ("status", "state"):
+        if f"{name}.json" not in JSON_FILES or name in APP_ONLY_FILES:
             raise ReelError(f"Unknown input {name}.")
         if name == "choice":
             value = {**(read_json(folder, "choice.json") or {}), **value}
         write_json(folder, f"{name}.json", value)
+    # A change request belongs to the one request it came with.
+    if "change" not in inputs:
+        (folder / "change.json").unlink(missing_ok=True)
+    if stage == "edit":
+        # Which cut this is, for the "Version" label and so browsers fetch the new video.
+        write_json(folder, "state.json", {**state, "cuts": int(state.get("cuts", 0)) + 1})
     mark_working(folder, stage)
-    send(state["chat_id"], stage_message(folder, stage, tuple(inputs)))
+    send(state["chat_id"], stage_message(folder, stage))
 
 
 def start_agent_through_chat_app(folder: Path, app_name: str) -> str:

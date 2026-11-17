@@ -56,7 +56,7 @@ from loguru import logger
 from pydantic import Field
 from werkzeug.serving import run_simple
 
-from reel_maker import reels
+from reel_maker import reels, watchdog
 
 # Persistent state for this app lives under DATA_DIR. It defaults to
 # ``data/.apps/reel-maker/`` but is overridable via the ``REEL_MAKER_DATA_DIR`` env var
@@ -197,9 +197,9 @@ class ReelListResponse(FrozenModel):
 class AdvanceRequest(FrozenModel):
     """Ask Studio to do the next stage of a reel, with the creator's inputs for it."""
 
-    stage: str = Field(description="story, script, revise-script, footage, edit or revise-reel")
+    stage: str = Field(description="story, script, footage or edit; script and edit can carry a change request")
     inputs: dict[str, Any] = Field(
-        default_factory=dict, description="Files to write first, by name: answers, choice, script or change"
+        default_factory=dict, description="Files to write first, by name: answers, choice or change"
     )
 
 
@@ -224,6 +224,7 @@ ROUTE_TABLE: RouteTable = {
     ("GET", "/api/reels/{reel_id}"): RouteModels(response_model=ReelResponse),
     ("POST", "/api/reels/{reel_id}/advance"): RouteModels(request_model=AdvanceRequest, response_model=ReelResponse),
     ("POST", "/api/reels/{reel_id}/takes"): RouteModels(response_model=TakeResponse, success_status=201),
+    ("POST", "/api/reels/{reel_id}/retry"): RouteModels(response_model=ReelResponse),
     ("POST", "/api/reels/{reel_id}/choose-take"): RouteModels(request_model=ChooseTakeRequest, response_model=ReelResponse),
     ("GET", "/api/reels/{reel_id}/files/{name}"): SchemalessRoute(reason="a video from the reel: footage, a take or the reel"),
     ("GET", "/"): SchemalessRoute(reason="the app's page"),
@@ -427,6 +428,16 @@ def upload_take(reel_id: str) -> Response:
     return model_response(TakeResponse(**saved), 201)
 
 
+@app.route("/api/reels/<reel_id>/retry", methods=["POST"])
+def retry_reel(reel_id: str) -> Response:
+    """Ask Studio to do the current step again, after it stopped or gave up."""
+    try:
+        watchdog.retry(DATA_DIR, reel_id, reels.send_through_chat_app)
+        return reel_answer(reel_id)
+    except reels.ReelError as error:
+        return error_response(str(error), 409)
+
+
 @app.route("/api/reels/<reel_id>/choose-take", methods=["POST"])
 def choose_take(reel_id: str) -> Response:
     """Pick which take the reel is cut from."""
@@ -504,6 +515,8 @@ def health() -> Response:
 
 def main() -> None:
     setup_logging()
+    # Reels keep working while no window is open, so their chats are watched from the app itself.
+    watchdog.start(DATA_DIR)
     run_simple(
         "127.0.0.1", PORT, app, threaded=True, use_reloader=False, use_debugger=False
     )

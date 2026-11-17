@@ -14,11 +14,11 @@ key or connection. Run everything from the workspace root (`/home/user/workspace
    follow `docs/setup.md` step 2 to pick another.
 3. **Install and start:** `python3 .external_worktrees/reel-maker/deploy/install.py`. It must end with
    `reel-maker is answering at http://127.0.0.1:8100/health`; if not, read `/var/log/supervisor/reel-maker-stderr.log`.
-4. **Install the reel skill** the app is built around, if the workspace lacks it:
-   `cp -r .external_worktrees/reel-maker/skills/make-app-reel .agents/skills/`.
-5. **Show it:** `uv run --no-sync workspace-layout open reel-maker --beside`.
-6. **Save the wiring:** commit `system/supervisord.conf.d/reel-maker.conf` (and `.agents/skills/make-app-reel/` if you
-   copied it) in the workspace.
+4. **Show it:** `uv run --no-sync workspace-layout open reel-maker --beside`.
+5. **Save the wiring:** commit `system/supervisord.conf.d/reel-maker.conf` in the workspace.
+
+Lauren's `make-app-reel` skill ships inside the repo (`skills/make-app-reel/`), and each reel's chat reads it from
+there, so nothing else needs installing.
 
 The phone page needs the workspace shared (the `use-from-phone` skill); without it the QR code has no address a phone
 can open.
