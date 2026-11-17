@@ -1,0 +1,328 @@
+"""Walks you through making a short vertical reel about an app you built in Studio: interview, script preview, filming your take on your phone, and the edit..
+
+Services run from /home/user/workspace (the repo root). Conventions:
+
+- Persistent state (anything written and read across runs -- cursors,
+  caches, snapshots, user records): read and write it under ``DATA_DIR``
+  (defined below), never a hardcoded ``data/.apps/reel-maker/`` at the
+  call site. ``DATA_DIR`` defaults to ``data/.apps/reel-maker/`` but
+  honors the ``REEL_MAKER_DATA_DIR`` env var, so an editing agent can point a
+  throwaway instance at a *copy* of the data instead of the live store
+  (see the update-app skill). Do NOT use ``Path(__file__)``-based
+  paths for state -- the bug to avoid is one process writing to
+  ``/home/user/workspace/data/.apps/...`` while another reads from
+  ``/home/user/workspace/system/apps/<pkg>/data/...``.
+- Static assets shipped alongside this file (templates, default
+  configs, bundled JSON): ``Path(__file__).parent / "assets/..."`` is
+  fine and is the right pattern.
+- Listen port: bind ``PORT`` (defined below), which defaults to this
+  app's assigned port but honors the ``REEL_MAKER_PORT`` env var, so
+  an editing agent can boot a throwaway instance on a *spare* port
+  alongside the live one (see the update-app skill). Never hardcode
+  the port at the ``run_simple`` call.
+
+This is a synchronous Flask app served by the threaded Werkzeug server.
+The app owns its own browser origin (the forwarder routes
+``http://reel-maker.<workspace-host>/`` straight to this port), so it serves
+at ``/`` and root-absolute URLs, cookies, and service workers all work
+unmodified -- nothing rewrites anything. Use ``flask_sock`` if you need
+WebSockets.
+"""
+
+import base64
+import hashlib
+import html
+import io
+import os
+import time
+from pathlib import Path
+
+from app_schema.api_schema import (
+    DEFAULT_API_SCHEMA_PATH,
+    RouteModels,
+    RouteTable,
+    SchemalessRoute,
+    register_api_schema_route,
+)
+import requests
+import segno
+from app_schema.routes import error_response, model_response
+from flask import Flask, Response, abort, request, send_file
+from imbue.imbue_common.frozen_model import FrozenModel
+from imbue.imbue_common.logging import setup_logging
+from loguru import logger
+from pydantic import Field
+from werkzeug.serving import run_simple
+
+# Persistent state for this app lives under DATA_DIR. It defaults to
+# ``data/.apps/reel-maker/`` but is overridable via the ``REEL_MAKER_DATA_DIR`` env var
+# so a throwaway instance can run against a *copy* of the data while editing --
+# see the update-app skill. Always read/write state through DATA_DIR;
+# never hardcode ``data/.apps/reel-maker/`` at a call site, or the override is
+# bypassed. A writing call site should ``DATA_DIR.mkdir(parents=True,
+# exist_ok=True)`` before writing.
+DATA_DIR = Path(os.environ.get("REEL_MAKER_DATA_DIR", "data/.apps/reel-maker"))
+
+# Listen port. Defaults to this app's assigned port but is overridable via
+# the ``REEL_MAKER_PORT`` env var so an editing agent can boot a throwaway
+# instance on a spare port next to the live one (see the update-app skill).
+# Never hardcode the port at the ``run_simple`` call, or the override is bypassed.
+PORT = int(os.environ.get("REEL_MAKER_PORT", "8100"))
+
+# The pages, scripts and styles shipped with the app.
+ASSETS_DIR = Path(__file__).parent / "assets"
+ICON_PATH = Path(__file__).parent.parent.parent / "icon.svg"
+APP_NAME = "reel-maker"
+# The workspace shell, which knows each app's address on the public domain (the one a phone can open).
+SHELL_URL = os.environ.get("MINDS_WORKSPACE_SERVER_URL", "http://127.0.0.1:8000").rstrip("/")
+PUBLIC_ADDRESS_CACHE_SECONDS = 60
+PUBLIC_ADDRESS_TIMEOUT_SECONDS = 3
+# The longest text a QR code is made for: a link, which stays far below what a QR code can hold.
+MAX_QR_TEXT_LENGTH = 1500
+# The example run's videos (Bowei's Deck List reel), shipped with the app under examples/.
+EXAMPLE_MEDIA_DIR = Path(__file__).resolve().parents[2] / "examples"
+EXAMPLE_MEDIA_FILES = {
+    "deck-list-reel/deck-list-reel.mp4",
+    "deck-list-reel/shots/2-first-prompt.mp4",
+    "deck-list-reel/shots/3-scryfall-count.mp4",
+    "deck-list-reel/shots/4-second-prompt.mp4",
+    "deck-list-reel/shots/5-search.mp4",
+    "deck-list-reel/shots/6-drag-to-tag.mp4",
+    "deck-list-reel/shots/8-end-card.mp4",
+}
+
+# The browser-side modules the workspace shell builds and every app serves from
+# its own origin: the app contract (how a page talks to the shell framing it) and
+# the element context menu (the right-click menu whose last rows hand the
+# clicked element to a chat). A module import is a fetch without cookies, which
+# the forwarder refuses across origins, so they are served here rather than from
+# the shell. Relative to the repo root the service runs from, like DATA_DIR.
+SHELL_STATIC_MODULES_DIR = Path("system/apps/system_interface/imbue/system_interface/static/_static")
+SHELL_STATIC_MODULE_NAMES = ('app_contract.js', 'context_menu.js')
+
+# The script every page serves (keep it on every page): it connects the page to
+# the shell, reports where the page is on the handshake so the shell can reopen
+# this app's window at the same place, and installs the element context menu.
+# A page visited outside the shell runs it harmlessly: nothing arrives, and the
+# menu's Explain and Modify rows grey out.
+SHELL_PAGE_SCRIPT_BODY = """
+  import { connectToShell } from "/_static/app_contract.js";
+  import { installElementContextMenu } from "/_static/context_menu.js";
+  let handshake = null;
+  const connection = connectToShell({
+    onHandshake: (received) => {
+      handshake = received;
+      connection.location(location.pathname + location.search, document.title);
+    },
+  });
+  installElementContextMenu({ connection, handshake: () => handshake });
+"""
+SHELL_PAGE_SCRIPT = f'<script type="module">{SHELL_PAGE_SCRIPT_BODY}</script>'
+
+
+def inline_script_source(body: str) -> str:
+    """The Content-Security-Policy source admitting one inline <script> whose body is exactly ``body``."""
+    return "'sha256-" + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode() + "'"
+
+
+# Every HTML page is served under this policy (the app is reachable from the
+# internet once the workspace is shared): scripts only from this origin plus the
+# inline blocks listed here by hash, fetches, sockets and images only from this
+# origin, inline styles, frames of any http(s) page, no plugins. Anything else a
+# page pulls in (a CDN script, Google Fonts, an image hosted elsewhere, a
+# third-party API called from the browser) is blocked until its origin is added
+# to the matching directive; a new inline <script> needs its
+# ``inline_script_source`` added.
+# The browser posts every block to ``/_csp-report`` below, which logs it on
+# stderr (the supervisor log), so a blocked resource is never silent; the
+# ``'report-sample'`` makes the browser include where a blocked inline script
+# is and how it starts, since the report otherwise names it only as "inline".
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    f"script-src 'self' 'report-sample' {inline_script_source(SHELL_PAGE_SCRIPT_BODY)}; "
+    "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src http: https:; "
+    "object-src 'none'; base-uri 'self'; form-action 'self'; "
+    "report-uri /_csp-report"
+)
+BROWSER_EXTENSION_SCHEMES = ("chrome-extension:", "moz-extension:", "safari-web-extension:")
+
+
+class HealthResponse(FrozenModel):
+    """What the health probe answers."""
+
+    status: str = Field(description="Always 'ok'")
+
+
+# What every route exchanges, which the app's API document publishes and every parse and answer
+# is checked against (build-app skill, "The app describes its own API"): a route that reads or
+# answers JSON names its pydantic models here and uses ``parse_request_body`` and
+# ``model_response``; a page, a file or a stream is declared schemaless with the reason.
+ROUTE_TABLE: RouteTable = {
+    ("GET", "/"): SchemalessRoute(reason="the app's page"),
+    ("GET", "/phone"): SchemalessRoute(reason="the phone page: the script and the record button"),
+    ("GET", "/_assets/{basename}"): SchemalessRoute(reason="a script or style the pages load"),
+    ("GET", "/icon.svg"): SchemalessRoute(reason="the app's icon"),
+    ("GET", "/qr.svg"): SchemalessRoute(reason="a QR code image"),
+    ("GET", "/_media/{name}"): SchemalessRoute(reason="a sample video"),
+    ("GET", "/_static/{basename}"): SchemalessRoute(reason="a browser-side module the shell builds"),
+    ("GET", "/health"): RouteModels(response_model=HealthResponse),
+    ("POST", "/_csp-report"): SchemalessRoute(reason="the browser's report of what the page's policy blocked"),
+}
+
+app = Flask("reel_maker", static_folder=None)
+# The app describes its own API: an OpenAPI document of every route below, served at the
+# manifest's api_schema_path.
+register_api_schema_route(
+    app, DEFAULT_API_SCHEMA_PATH, title='Reel maker', description='Walks you through making a short vertical reel about an app you built in Studio: interview, script preview, filming your take on your phone, and the edit.', route_table=ROUTE_TABLE
+)
+
+
+@app.after_request
+def add_content_security_policy(response: Response) -> Response:
+    if response.mimetype == "text/html":
+        response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+    return response
+
+
+# When the shell was last asked (0 for never) and what it answered.
+_public_address_cache: dict[str, float | str | None] = {"asked_at": 0.0, "address": None}
+
+
+def public_address() -> str | None:
+    """This app's address on the workspace's public domain (what a phone can open), else None.
+
+    It answers None while the workspace is not shared. An unreachable shell is not remembered, so the next page
+    load asks again.
+    """
+    asked_at = float(_public_address_cache["asked_at"] or 0.0)
+    remembered = _public_address_cache["address"]
+    if asked_at > 0 and time.monotonic() - asked_at < PUBLIC_ADDRESS_CACHE_SECONDS:
+        return str(remembered) if remembered else None
+    try:
+        answer = requests.get(f"{SHELL_URL}/api/inventory", timeout=PUBLIC_ADDRESS_TIMEOUT_SECONDS)
+        answer.raise_for_status()
+        entries = answer.json()["apps"]
+    except (requests.RequestException, ValueError, KeyError):
+        return None
+    found = next((entry.get("share_url") for entry in entries if entry.get("name") == APP_NAME), None)
+    _public_address_cache["asked_at"] = time.monotonic()
+    _public_address_cache["address"] = found
+    return found
+
+
+def render_page(basename: str) -> Response:
+    page = (ASSETS_DIR / basename).read_text().replace("__SHELL_PAGE_SCRIPT__", SHELL_PAGE_SCRIPT)
+    page = page.replace("<body ", f'<body data-public-address="{html.escape(public_address() or "", quote=True)}" ', 1)
+    return Response(page, mimetype="text/html")
+
+
+@app.route("/")
+def index() -> Response:
+    """The walkthrough: pick an app, answer questions, see the script, film a take, watch the reel."""
+    return render_page("wizard.html")
+
+
+@app.route("/phone")
+def phone() -> Response:
+    """The phone page: the script to read and a big button that opens the phone's camera."""
+    return render_page("phone.html")
+
+
+ASSET_TYPES = {
+    "style.css": "text/css",
+    "wizard.js": "text/javascript",
+    "phone.js": "text/javascript",
+    "share.js": "text/javascript",
+}
+
+
+@app.route("/_assets/<basename>")
+def asset(basename: str) -> Response:
+    """A script or style the pages load."""
+    if basename not in ASSET_TYPES:
+        abort(404)
+    return send_file((ASSETS_DIR / basename).absolute(), mimetype=ASSET_TYPES[basename], max_age=0)
+
+
+@app.route("/icon.svg")
+def icon() -> Response:
+    """The app's icon."""
+    return send_file(ICON_PATH.absolute(), mimetype="image/svg+xml")
+
+
+@app.route("/qr.svg")
+def qr_code() -> Response:
+    """A QR code image for the text given as ``data``."""
+    text = request.args.get("data", "")
+    if not text or len(text) > MAX_QR_TEXT_LENGTH:
+        return error_response("data must be between 1 and %d characters" % MAX_QR_TEXT_LENGTH, 400)
+    buffer = io.BytesIO()
+    segno.make(text, error="m").save(buffer, kind="svg", scale=8, border=2, dark="#111111", light="#ffffff", xmldecl=False)
+    return Response(buffer.getvalue(), mimetype="image/svg+xml")
+
+
+@app.route("/_media/<path:name>")
+def media(name: str) -> Response:
+    """A sample video from the Deck List reel."""
+    if name not in EXAMPLE_MEDIA_FILES:
+        abort(404)
+    return send_file((EXAMPLE_MEDIA_DIR / name).absolute(), mimetype="video/mp4", conditional=True)
+
+
+@app.route("/_csp-report", methods=["POST"])
+def content_security_policy_report() -> Response:
+    """Where the browser reports what the page's security policy blocked."""
+    body = request.get_json(force=True, silent=True)
+    report = body.get("csp-report") if isinstance(body, dict) else None
+    if not isinstance(report, dict):
+        return Response(status=204)
+    blocked, page, source, directive, line, sample = (
+        str(report.get(key, ""))[:500]
+        for key in ("blocked-uri", "document-uri", "source-file", "effective-directive", "line-number", "script-sample")
+    )
+    # A block caused by a browser extension is the policy doing its job and is not logged.
+    if blocked.startswith(BROWSER_EXTENSION_SCHEMES) or source.startswith(BROWSER_EXTENSION_SCHEMES):
+        return Response(status=204)
+    # An inline script or style is reported as "inline": say where it is and how it starts instead.
+    where = f" at {source}:{line}" if source and line else ""
+    starting = f" starting {sample!r}" if sample else ""
+    remedy = (
+        "add its inline_script_source to CONTENT_SECURITY_POLICY if the page needs it"
+        if blocked == "inline"
+        else "add its origin to CONTENT_SECURITY_POLICY if the page needs it"
+    )
+    logger.error(
+        "Content-Security-Policy blocked {!r} on {!r} ({}){}{}; {}", blocked, page, directive, where, starting, remedy
+    )
+    return Response(status=204)
+
+
+@app.route("/_static/<basename>")
+def shell_module(basename: str) -> Response:
+    """One of the two browser-side modules the workspace shell builds and every app serves from its own origin."""
+    # The two shell-built modules and nothing else: a name that is not one of
+    # them is a 404, so this route can never read outside that directory.
+    if basename not in SHELL_STATIC_MODULE_NAMES:
+        abort(404)
+    module_path = SHELL_STATIC_MODULES_DIR / basename
+    if not module_path.is_file():
+        abort(404)
+    # Flask resolves a relative path against the app's own directory, not the cwd.
+    return send_file(module_path.absolute(), mimetype="text/javascript")
+
+
+@app.route("/health")
+def health() -> Response:
+    """Whether the app is up."""
+    return model_response(HealthResponse(status="ok"))
+
+
+def main() -> None:
+    setup_logging()
+    run_simple(
+        "127.0.0.1", PORT, app, threaded=True, use_reloader=False, use_debugger=False
+    )
+
+
+if __name__ == "__main__":
+    main()

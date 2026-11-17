@@ -1,0 +1,57 @@
+[project]
+name = "reel-maker"
+version = "0.1.0"
+description = "Walks you through making a short vertical reel about an app you built in Studio: interview, script preview, filming your take on your phone, and the edit."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "app-schema",
+    "flask>=3.0",
+    "flask-sock>=0.7",
+    "imbue-common",
+    "loguru>=0.7",
+    "pydantic>=2.0",
+    "werkzeug>=3.0",
+    "segno",
+    "requests",
+]
+
+[project.scripts]
+reel-maker = "reel_maker.runner:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reel_maker"]
+
+[dependency-groups]
+dev = [
+    # The app's tests run from its own venv, which its sync gives the dev group: pytest
+    # and what the ratchets check with.
+    "imbue-common[testing]",
+    # What runner_test.py asserts the API document with.
+    "app-schema[testing]",
+    # Used by test_no_type_errors in the ratchets, pinned to the version the shell and chat use.
+    "ty==0.0.85",
+]
+
+# Makes this directory the tests' own pytest root, so they run against this app's venv
+# rather than the workspace's root configuration.
+[tool.pytest.ini_options]
+testpaths = ["."]
+
+# The workspace's shared code, live and editable. The repo is cloned at
+# .external_worktrees/reel-maker/ in a workspace, so the path climbs to the workspace root. app-schema's own workspace sources
+# apply in this lock, so imbue-common comes from the root's mngr pin; a source for it
+# here as well would be a second URL for one package, which uv refuses to lock.
+[tool.uv.sources]
+app-schema = { path = "../../system/libs/app_schema", editable = true }
+
+# Makes this directory ty's project; without a [tool.ty] table ty keeps searching upward.
+[tool.ty]
+
+# Lauren's reel instructions ship under skills/ unchanged; their scripts are references, not the app's code.
+[tool.ty.src]
+exclude = ["skills"]

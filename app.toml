@@ -1,0 +1,23 @@
+name = "reel-maker"
+display_name = "Reel maker"
+# What the app is for, in the person's terms: what an agent reads to decide whether this app
+# does what it needs. The app's API document (served at api_schema_path) carries it too.
+description = "Walks you through making a short vertical reel about an app you built in Studio: interview, script preview, filming your take on your phone, and the edit."
+api_schema_path = "/api/schema"
+icon = "icon.svg"
+priority = "user"
+program = "reel-maker"
+# The shell stops the app once no window shows it (a minute after the last one
+# closes) and starts it again on the next request; false keeps it running for
+# the life of the workspace. Set false if the app does work between requests
+# (a background thread, a poller, a subscription to an outside service, a job
+# that outlives the window): a stop loses that work. Periodic work (a refresh
+# every N minutes, a nightly sync) is a routine, not a loop in the service:
+# see the manage-routines skill.
+stop_when_no_windows = true
+
+# How update-app boots a throwaway preview of this app: on a free port, over a
+# scratch copy of its data (see .agents/skills/update-app/python/update_app_skill/preview_app.py).
+[preview]
+env = {REEL_MAKER_PORT = "{port:main}", REEL_MAKER_HOST = "{host}", REEL_MAKER_DATA_DIR = "{copy:data}"}
+copies = {data = "data/.apps/reel-maker"}

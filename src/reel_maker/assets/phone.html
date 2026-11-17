@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F50D00">
+<title>Film your take</title>
+<link rel="stylesheet" href="/_assets/style.css">
+</head>
+<body class="phone">
+<header class="phone-head">
+  <div class="brand"><img src="/icon.svg" alt="" width="24" height="24"> Deck List reel</div>
+  <details class="phone-tips">
+    <summary>How to film it</summary>
+    <ol>
+      <li>Phone upright, at eye level, facing a window.</li>
+      <li>Wait a second, read straight to camera, wait a second.</li>
+      <li>Stumbled? Keep going. Studio cuts the pauses.</li>
+    </ol>
+  </details>
+</header>
+
+<div class="example-banner" id="example-banner" hidden>
+  <span><b>Example run:</b> Bowei's Deck List reel. Nothing here is saved.</span>
+</div>
+
+<section class="phone-ready" id="phone-ready" hidden>
+  <h2>Your reel is ready</h2>
+  <video src="/_media/deck-list-reel/deck-list-reel.mp4" controls playsinline preload="metadata"></video>
+  <div class="share" id="phone-share"></div>
+</section>
+
+<section class="phone-takes" id="phone-takes" hidden>
+  <h2>Your takes</h2>
+  <div id="take-list"></div>
+</section>
+
+<main class="prompter" id="prompter"></main>
+
+<footer class="record-bar">
+  <label class="record-button" id="record-label">
+    <input type="file" accept="video/*" capture="user" id="record-input">
+    <span class="rec-dot"></span><span id="record-text">Record your take</span>
+  </label>
+</footer>
+<script src="/_assets/share.js"></script>
+<script src="/_assets/phone.js"></script>
+__SHELL_PAGE_SCRIPT__
+</body>
+</html>
