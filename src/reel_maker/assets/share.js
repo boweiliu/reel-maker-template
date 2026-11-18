@@ -20,12 +20,14 @@ function renderShare(root, { videoUrl, fileName, caption }) {
     </div>
     <div class="share-label">Caption</div>
     <div class="share-caption">
-      <textarea rows="3" data-role="caption">${caption}</textarea>
+      <textarea rows="3" data-role="caption"></textarea>
       <button class="ghost small" data-role="copy">Copy caption</button>
     </div>
     <p class="note share-status" data-role="status" hidden></p>`;
 
   const q = (role) => root.querySelector(`[data-role="${role}"]`);
+  // Set as text, never as markup: a caption can hold anything.
+  q("caption").value = caption;
   const status = (text) => { q("status").hidden = false; q("status").textContent = text; };
   const captionText = () => q("caption").value;
   const isPhone = matchMedia("(pointer: coarse)").matches;

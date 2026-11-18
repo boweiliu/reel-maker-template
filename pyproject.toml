@@ -35,12 +35,20 @@ dev = [
     "app-schema[testing]",
     # Used by test_no_type_errors in the ratchets, pinned to the version the shell and chat use.
     "ty==0.0.85",
+    # What the browser tests drive the pages with (the same version as the workspace's own browser tests) and the
+    # per-test time limit they and the rest of the suite run under.
+    "playwright==1.58.0",
+    "pytest-timeout>=2.4.0",
 ]
 
 # Makes this directory the tests' own pytest root, so they run against this app's venv
 # rather than the workspace's root configuration.
 [tool.pytest.ini_options]
 testpaths = ["."]
+markers = [
+    "browser: drives the pages in a real browser",
+]
+timeout = 20
 
 # The workspace's shared code, live and editable. The repo is cloned at
 # .external_worktrees/reel-maker/ in a workspace, so the path climbs to the workspace root. app-schema's own workspace sources

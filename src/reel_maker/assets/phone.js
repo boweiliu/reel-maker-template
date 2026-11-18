@@ -22,6 +22,7 @@ const fileUrl = (name) => `/api/reels/${encodeURIComponent(reelId)}/files/${name
 let reel = null;
 let shownReelVersion = null;
 let uploading = false;
+let takesShown = null;
 
 function renderScript(lines) {
   $("prompter").innerHTML = lines.map((line, i) => `<p><span>${i + 1}</span>${escapeHtml(line)}</p>`).join("");
@@ -30,10 +31,14 @@ function renderScript(lines) {
 function renderTakes() {
   const takes = reel?.takes || [];
   const chosen = reel?.choice?.take || takes[takes.length - 1]?.name;
+  // The page checks for news every few seconds; redrawing unchanged takes would reset a video being watched.
+  const signature = JSON.stringify([takes.map((take) => take.name), chosen]);
+  if (signature === takesShown) return;
+  takesShown = signature;
   $("phone-takes").hidden = takes.length === 0;
   $("take-list").innerHTML = takes.slice().reverse().map((take) => `
     <div class="phone-take ${take.name === chosen ? "chosen" : ""}">
-      <video src="${fileUrl(take.name)}" controls playsinline preload="metadata"></video>
+      <video src="${fileUrl(`takes/${take.name}`)}" controls playsinline preload="metadata"></video>
       <div class="phone-take-row">
         <b>Take ${take.number}</b>
         <span class="sent">Sent to Studio</span>

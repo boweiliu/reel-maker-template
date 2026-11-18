@@ -9,6 +9,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import threading
 import time
 from collections.abc import Callable
@@ -31,15 +32,24 @@ STAGE_OUTPUTS = {
     "footage": "footage.json",
     "edit": "reel.json",
 }
-# Stages a change request can be sent with (a new script, a new cut).
-CHANGEABLE_STAGES = {"script", "edit"}
+# The creator's inputs each stage may be sent with (a change request is a new script or a new cut); anything else is
+# refused, so a request can never write the agent's own outputs or the app's records.
+STAGE_INPUTS = {
+    "story": {"answers"},
+    "script": {"choice", "change"},
+    "footage": set(),
+    "edit": {"choice", "change"},
+}
 # What the agent's outputs and the creator's inputs are called in a reel's folder.
 JSON_FILES = (
     "request.json", "interview.json", "answers.json", "tones.json", "choice.json", "script.json",
     "footage.json", "reel.json", "change.json", "status.json", "state.json", "health.json",
 )
-# The files only the app writes; a stage's inputs can never overwrite them.
-APP_ONLY_FILES = ("status", "state", "health")
+# The newest takes kept per reel; older ones are deleted as new ones arrive, so phone recordings of hundreds of
+# megabytes each cannot fill the disk.
+MAX_TAKES = 12
+# Requests that change a reel's files one at a time: a double click must not start a stage twice.
+REEL_LOCK = threading.RLock()
 REEL_ID_PATTERN = re.compile(r"^[a-z0-9]{12}$")
 TAKE_PATTERN = re.compile(r"^take-(\d+)\.(mp4|mov|webm|m4v|3gp)$")
 VIDEO_SUFFIXES = {"video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm", "video/x-m4v": "m4v", "video/3gpp": "3gp"}
@@ -128,25 +138,38 @@ def save_take(data_dir: Path, reel_id: str, content_type: str, stream: Any) -> d
     takes_folder.mkdir(parents=True, exist_ok=True)
     number = max((take["number"] for take in list_takes(folder)), default=0) + 1
     target = takes_folder / f"take-{number}.{suffix}"
-    temporary = takes_folder / f".upload-{number}.part"
-    with temporary.open("wb") as handle:
-        while chunk := stream.read(1024 * 1024):
-            handle.write(chunk)
-    if temporary.stat().st_size == 0:
-        temporary.unlink()
-        raise ReelError("The video arrived empty. Try recording it again.")
-    temporary.replace(target)
-    choice = read_json(folder, "choice.json") or {}
-    write_json(folder, "choice.json", {**choice, "take": target.name})
+    temporary = takes_folder / f".upload-{secrets.token_hex(4)}.part"
+    try:
+        with temporary.open("wb") as handle:
+            while chunk := stream.read(1024 * 1024):
+                handle.write(chunk)
+        if temporary.stat().st_size == 0:
+            raise ReelError("The video arrived empty. Try recording it again.")
+        temporary.replace(target)
+    finally:
+        # A refused, empty or dropped upload leaves nothing behind.
+        temporary.unlink(missing_ok=True)
+    with REEL_LOCK:
+        choice = read_json(folder, "choice.json") or {}
+        write_json(folder, "choice.json", {**choice, "take": target.name})
+        prune_takes(folder)
     return {"name": target.name, "number": number, "bytes": target.stat().st_size}
+
+
+def prune_takes(folder: Path) -> None:
+    """Delete the oldest takes beyond ``MAX_TAKES``; a new take is the chosen one, so it is never among them."""
+    takes = list_takes(folder)
+    for take in takes[: max(0, len(takes) - MAX_TAKES)]:
+        (folder / "takes" / take["name"]).unlink(missing_ok=True)
 
 
 def choose_take(data_dir: Path, reel_id: str, take_name: str) -> None:
     folder = reel_dir(data_dir, reel_id)
-    if take_name not in {take["name"] for take in list_takes(folder)}:
-        raise ReelError("That take is not in this reel.")
-    choice = read_json(folder, "choice.json") or {}
-    write_json(folder, "choice.json", {**choice, "take": take_name})
+    with REEL_LOCK:
+        if take_name not in {take["name"] for take in list_takes(folder)}:
+            raise ReelError("That take is not in this reel.")
+        choice = read_json(folder, "choice.json") or {}
+        write_json(folder, "choice.json", {**choice, "take": take_name})
 
 
 def kickoff_message(folder: Path, app_name: str) -> str:
@@ -171,7 +194,12 @@ def create_reel(data_dir: Path, app: dict[str, str], start_agent: Callable[[Path
     write_json(folder, "request.json", {"app": app})
     write_json(folder, "state.json", {"app": app.get("name", ""), "created_at": time.time(), "chat_id": ""})
     mark_working(folder, "research")
-    chat_id = start_agent(folder, app.get("display_name") or app.get("name", ""))
+    try:
+        chat_id = start_agent(folder, app.get("display_name") or app.get("name", ""))
+    except ReelError:
+        # A reel whose chat never started has nothing to resume; leave no dead entry in the creator's list.
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
     state = read_json(folder, "state.json") or {}
     write_json(folder, "state.json", {**state, "chat_id": chat_id})
     return reel_id
@@ -179,29 +207,36 @@ def create_reel(data_dir: Path, app: dict[str, str], start_agent: Callable[[Path
 
 def advance(data_dir: Path, reel_id: str, stage: str, inputs: dict[str, Any], send: Callable[[str, str], None]) -> None:
     """Write the creator's inputs for a stage and ask the reel agent to do it."""
-    if stage not in STAGE_OUTPUTS or stage == "research" or (stage not in CHANGEABLE_STAGES and "change" in inputs):
-        raise ReelError("Studio can't do that step.")
-    folder = reel_dir(data_dir, reel_id)
-    state = read_json(folder, "state.json") or {}
-    if not state.get("chat_id"):
-        raise ReelError("This reel's Studio chat isn't running.")
-    status = read_json(folder, "status.json") or {}
-    if status.get("state") == "working":
-        raise ReelError("Studio is still working on the last step. Wait for it to finish.")
-    for name, value in inputs.items():
-        if f"{name}.json" not in JSON_FILES or name in APP_ONLY_FILES:
-            raise ReelError(f"Unknown input {name}.")
-        if name == "choice":
-            value = {**(read_json(folder, "choice.json") or {}), **value}
-        write_json(folder, f"{name}.json", value)
-    # A change request belongs to the one request it came with.
-    if "change" not in inputs:
-        (folder / "change.json").unlink(missing_ok=True)
-    if stage == "edit":
-        # Which cut this is, for the "Version" label and so browsers fetch the new video.
-        write_json(folder, "state.json", {**state, "cuts": int(state.get("cuts", 0)) + 1})
-    mark_working(folder, stage)
-    send(state["chat_id"], stage_message(folder, stage))
+    with REEL_LOCK:
+        if stage not in STAGE_OUTPUTS or stage == "research":
+            raise ReelError("Studio can't do that step.")
+        for name, value in inputs.items():
+            if name not in STAGE_INPUTS[stage]:
+                raise ReelError(f"Studio can't take {name} for that step.")
+            if not isinstance(value, dict):
+                raise ReelError(f"Unknown input {name}.")
+        if "change" in inputs and not str(inputs["change"].get("text", "")).strip():
+            raise ReelError("Say what you'd like changed.")
+        folder = reel_dir(data_dir, reel_id)
+        state = read_json(folder, "state.json") or {}
+        if not state.get("chat_id"):
+            raise ReelError("This reel's Studio chat isn't running.")
+        status = read_json(folder, "status.json") or {}
+        if status.get("state") == "working":
+            raise ReelError("Studio is still working on the last step. Wait for it to finish.")
+        choice = {**(read_json(folder, "choice.json") or {}), **inputs.get("choice", {})}
+        if stage == "edit" and choice.get("take") not in {take["name"] for take in list_takes(folder)}:
+            raise ReelError("Film a take first.")
+        for name, value in inputs.items():
+            write_json(folder, f"{name}.json", choice if name == "choice" else value)
+        # A change request belongs to the one request it came with.
+        if "change" not in inputs:
+            (folder / "change.json").unlink(missing_ok=True)
+        if stage == "edit":
+            # Which cut this is, for the "Version" label and so browsers fetch the new video.
+            write_json(folder, "state.json", {**state, "cuts": int(state.get("cuts", 0)) + 1})
+        mark_working(folder, stage)
+        send(state["chat_id"], stage_message(folder, stage))
 
 
 def start_agent_through_chat_app(folder: Path, app_name: str) -> str:

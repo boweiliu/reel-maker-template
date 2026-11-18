@@ -187,6 +187,10 @@ def repair(
     folder: Path, health: dict[str, Any], status: dict[str, Any], state: dict[str, Any], now: float, probes: Probes,
     reason: str, restart: bool,
 ) -> None:
+    # The agent may have finished since this check read the status; never reopen a finished stage.
+    if (reels.read_json(folder, "status.json") or {}).get("state") == "done":
+        health.update(condition="working", message="")
+        return
     if health.get("repairs", 0) >= MAX_REPAIRS:
         health.update(
             condition="gave_up",
@@ -219,19 +223,20 @@ def repair(
 
 def retry(data_dir: Path, reel_id: str, send: Callable[[str, str], None]) -> None:
     """The creator's "Try again": the current stage asked for afresh, with the repair count reset."""
-    folder = reels.reel_dir(data_dir, reel_id)
-    status = reels.read_json(folder, "status.json") or {}
-    state = reels.read_json(folder, "state.json") or {}
-    if status.get("stage") not in reels.STAGE_OUTPUTS or not state.get("chat_id"):
-        raise reels.ReelError("There is nothing to try again.")
-    reels.mark_working(folder, status["stage"])
-    restarted = reels.read_json(folder, "status.json") or {}
-    health = reels.read_json(folder, "health.json") or {}
-    fresh: dict[str, Any] = {"stage": status["stage"], "requested_at": restarted.get("requested_at"), "repairs": 0, "condition": "working",
-             "message": "", "history": health.get("history", [])}
-    note(fresh, time.time(), "You asked Studio to try again.")
-    reels.write_json(folder, "health.json", fresh)
-    send(state["chat_id"], reels.stage_message(folder, status["stage"]))
+    with reels.REEL_LOCK:
+        folder = reels.reel_dir(data_dir, reel_id)
+        status = reels.read_json(folder, "status.json") or {}
+        state = reels.read_json(folder, "state.json") or {}
+        if status.get("stage") not in reels.STAGE_OUTPUTS or status.get("state") == "done" or not state.get("chat_id"):
+            raise reels.ReelError("There is nothing to try again.")
+        reels.mark_working(folder, status["stage"])
+        restarted = reels.read_json(folder, "status.json") or {}
+        health = reels.read_json(folder, "health.json") or {}
+        fresh: dict[str, Any] = {"stage": status["stage"], "requested_at": restarted.get("requested_at"), "repairs": 0, "condition": "working",
+                 "message": "", "history": health.get("history", [])}
+        note(fresh, time.time(), "You asked Studio to try again.")
+        reels.write_json(folder, "health.json", fresh)
+        send(state["chat_id"], reels.stage_message(folder, status["stage"]))
 
 
 def check_all(data_dir: Path, probes: Probes) -> None:

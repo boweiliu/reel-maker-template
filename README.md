@@ -58,4 +58,4 @@ Tests (from the repo folder):
 uv run --no-sync --project . pytest -q src test_reel_maker_ratchets.py
 ```
 
-More in `docs/`: `setup.md`, `operations.md`, `design.md`, `agent-contract.md`, `tests.md`.
+More in `docs/`: `setup.md`, `operations.md`, `design.md`, `tests.md`.
